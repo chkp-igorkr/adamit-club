@@ -9,7 +9,7 @@
 
 Your site URL will be:
 
-<https://chkp-igorkr.github.io/adamit-club/>
+<a href="https://chkp-igorkr.github.io/adamit-club/" target="_blank" rel="noopener noreferrer">https://chkp-igorkr.github.io/adamit-club/</a>
 
 The root page redirects automatically to the 3D viewer in `bar/index.html`.
 
