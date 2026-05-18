@@ -10,6 +10,6 @@
 
 Your site URL will be:
 
-`https://<your-github-username>.github.io/adamit-club/`
+`https://chkp-igorkr.github.io/adamit-club/`
 
 The root page redirects automatically to the 3D viewer in `bar/index.html`.
