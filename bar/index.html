@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Bar Island — Versions</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1a1a; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
+  #viewer { width: 100%; height: 100%; border: 0; display: block; }
+  #toolbar {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(20, 20, 20, 0.40);
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 10;
+    width: 95vw;
+    box-sizing: border-box;
+  }
+  #toolbar button {
+    background: rgba(255, 255, 255, 0.15);
+    color: #f5f0e6;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  #toolbar button:hover { background: rgba(255, 255, 255, 0.28); }
+  #toolbar button.active {
+    background: rgba(176, 122, 58, 0.7);
+    border-color: rgba(176, 122, 58, 0.9);
+    color: #fff;
+  }
+  #toolbar .d-button { margin-left: auto; }       /* pinned to the right of the bar */
+  #toolbar .d-button.toggled {
+    background: rgba(70, 110, 150, 0.7);
+    border-color: rgba(70, 110, 150, 0.95);
+    color: #fff;
+  }
+  #toolbar .s-button.toggled {
+    background: rgba(150, 110, 60, 0.7);
+    border-color: rgba(150, 110, 60, 0.95);
+    color: #fff;
+  }
+  #toolbar .loading { color: rgba(255,255,255,0.6); font-size: 12px; padding: 6px 4px; }
+  /* Bigger tap targets on touch / small viewports. */
+  @media (max-width: 768px), (pointer: coarse) {
+    #toolbar { gap: 10px; padding: 10px 12px; }
+    #toolbar button {
+      padding: 12px 18px;
+      font-size: 16px;
+      min-height: 44px;
+      border-radius: 8px;
+    }
+  }
+</style>
+</head>
+<body>
+<iframe id="viewer"></iframe>
+<div id="toolbar"><span class="loading">discovering versions…</span></div>
+<script>
+  // Default version shown until discovery completes.
+  const DEFAULT_SRC = 'bar_island_3d.html';
+
+  // Browsers cache iframe content aggressively. A per-page-load token appended
+  // to every iframe src forces a fresh fetch each time index.html is reloaded.
+  const CACHE_BUST = Date.now();
+  const bust = name => `${name}?_=${CACHE_BUST}`;
+
+  document.getElementById('viewer').src = bust(DEFAULT_SRC);
+
+  // Discover bar_island_3d*.html files by probing a candidate name space with
+  // HEAD requests. Python's http.server doesn't expose a directory listing
+  // while index.html exists, so we enumerate likely names instead.
+  async function discoverVersions() {
+    const SUFFIXES = ['A', 'B', 'C', 'D', 'E', 'F',
+                      'AB', 'AC', 'AD', 'AE', 'AF',
+                      'BC', 'BD', 'BE', 'BF',
+                      'CD', 'CE', 'CF',
+                      'DE', 'DF',
+                      'EF'];
+    const candidates = ['bar_island_3d.html'];
+    for (let v = 1; v <= 30; v++) {
+      candidates.push(`bar_island_3d_v${v}.html`);
+      for (const s of SUFFIXES) candidates.push(`bar_island_3d_v${v}_${s}.html`);
+    }
+    const checks = candidates.map(async name => {
+      try {
+        const r = await fetch(name + '?_=' + Date.now(), { method: 'HEAD', cache: 'no-store' });
+        return r.ok ? name : null;
+      } catch { return null; }
+    });
+    return (await Promise.all(checks)).filter(Boolean);
+  }
+
+  function labelFor(name) {
+    if (name === 'bar_island_3d.html') return 'current';
+    const stripped = name.replace(/^bar_island_3d_/, '').replace(/\.html$/, '');
+    // Split "v6_E" → "v6 · E"; bare "v6" stays as "v6".
+    return stripped.replace(/_/g, ' · ');
+  }
+
+  // Sort: bar_island_3d.html ("current") first; rest by version then suffix.
+  function sortKey(name) {
+    if (name === 'bar_island_3d.html') return [-Infinity, ''];
+    const m = name.match(/_v(\d+)(?:_(.+))?\.html$/);
+    return m ? [parseInt(m[1], 10), m[2] || ''] : [999, name];
+  }
+
+  // 'D' button state: when toggled, the iframe hides stools/lamps/countertop
+  // items/wall shelves/wall. State persists across version switches.
+  let presentationHidden = false;
+  function sendToggle() {
+    const v = document.getElementById('viewer');
+    try {
+      v.contentWindow.postMessage(
+        { type: 'togglePresentation', visible: !presentationHidden },
+        '*'
+      );
+    } catch {}
+  }
+
+  // 'S' button: swap middle shelves between dark gray and cab texture.
+  // On by default — shelves render in cab texture until toggled off.
+  let shelvesCabTexture = true;
+  function sendShelvesToggle() {
+    const v = document.getElementById('viewer');
+    try {
+      v.contentWindow.postMessage(
+        { type: 'toggleShelves', useCab: shelvesCabTexture },
+        '*'
+      );
+    } catch {}
+  }
+
+  function buildToolbar(files) {
+    files.sort((a, b) => {
+      const [av, as] = sortKey(a);
+      const [bv, bs] = sortKey(b);
+      if (av !== bv) return av - bv;
+      return as.localeCompare(bs);
+    });
+    const bar = document.getElementById('toolbar');
+    bar.innerHTML = '';
+    const viewer = document.getElementById('viewer');
+    const currentSrc = new URL(viewer.src).pathname.replace(/^.*\//, '');
+    for (const name of files) {
+      const b = document.createElement('button');
+      b.textContent = labelFor(name);
+      b.dataset.src = name;
+      if (name === currentSrc) b.classList.add('active');
+      b.addEventListener('click', () => {
+        viewer.src = bust(name);
+        bar.querySelectorAll('button:not(.d-button)').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+      });
+      bar.appendChild(b);
+    }
+    // Rightmost group: 'D' (decorations) and 'S' (shelf material).
+    const dBtn = document.createElement('button');
+    dBtn.textContent = 'D';
+    dBtn.title = 'Toggle stools, lamps, countertop items, wall shelves, wall';
+    dBtn.classList.add('d-button');
+    if (presentationHidden) dBtn.classList.add('toggled');
+    dBtn.addEventListener('click', () => {
+      presentationHidden = !presentationHidden;
+      dBtn.classList.toggle('toggled', presentationHidden);
+      sendToggle();
+    });
+    bar.appendChild(dBtn);
+
+    const sBtn = document.createElement('button');
+    sBtn.textContent = 'S';
+    sBtn.title = 'Toggle middle shelves: dark gray ↔ cab texture';
+    sBtn.classList.add('s-button');
+    if (shelvesCabTexture) sBtn.classList.add('toggled');
+    sBtn.addEventListener('click', () => {
+      shelvesCabTexture = !shelvesCabTexture;
+      sBtn.classList.toggle('toggled', shelvesCabTexture);
+      sendShelvesToggle();
+    });
+    bar.appendChild(sBtn);
+  }
+
+  // Re-apply both toggle states every time the iframe loads a new version.
+  document.getElementById('viewer').addEventListener('load', () => {
+    sendToggle();
+    sendShelvesToggle();
+  });
+
+  discoverVersions().then(files => {
+    if (files.length === 0) {
+      document.getElementById('toolbar').innerHTML =
+        '<span class="loading">no versions found</span>';
+      return;
+    }
+    // If the default was deleted, fall back to the first discovered version.
+    if (!files.includes(DEFAULT_SRC)) {
+      document.getElementById('viewer').src = bust(files[0]);
+    }
+    buildToolbar(files);
+  });
+</script>
+</body>
+</html>

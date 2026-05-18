@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Bar Island — 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #e5dfd3; font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #333; }
+  #info { position: absolute; top: 12px; left: 12px; background: rgba(255,255,255,0.78); padding: 8px 12px; border-radius: 8px; font-size: 12px; line-height: 1.4; max-width: 320px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  #info b { color: #b07a3a; }
+  #info kbd { background: #f2efe9; border: 1px solid #ccc; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="info">
+  <b>ADAMIT SOCIAL BAR</b><br>
+  <span style="color:#666">Drag to orbit · scroll to zoom · right-drag to pan</span>
+</div>
+<script>
+window.OAK_DATA_URL = "./oak.png";
+window.CAB_DATA_URL = "./cab.jpg";
+</script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ----- Renderer / Scene / Camera -----
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.85;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe8e2d4);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.05, 60);
+camera.position.set(4.8, 2.6, 4.8);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.set(0, 0.6, 0);
+controls.minDistance = 1.5;
+controls.maxDistance = 15;
+controls.maxPolarAngle = Math.PI / 2 - 0.02;
+
+// ----- Lighting -----
+scene.add(new THREE.HemisphereLight(0xfff4e0, 0x6b6354, 0.18));
+
+const sun = new THREE.DirectionalLight(0xffcc99, 0.6);
+sun.position.set(4.5, 7.5, 3.0);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+const d = 6;
+Object.assign(sun.shadow.camera, { left: -d, right: d, top: d, bottom: -d, near: 0.1, far: 22 });
+sun.shadow.bias = -0.00015;
+sun.shadow.normalBias = 0.02;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0xc8d8ff, 0.55);
+fill.position.set(-4, 3.5, -2);
+scene.add(fill);
+
+// Extra warm light from the south (incoming from -z, shines toward +z = N).
+const southLight = new THREE.DirectionalLight(0xffd8a0, 0.7);
+southLight.position.set(0, 4, -5);
+scene.add(southLight);
+
+// ----- Shared Image loader (one decode per file, many Three.Textures) -----
+// `insetPx` crops the given number of pixels off every edge — useful when the
+// source photo has 1-2 light pixels at the border that show as a white seam
+// under MirroredRepeat sampling.
+function makeImageSource(dataURL, insetPx = 0) {
+  const img = new Image();
+  const pending = [];
+  const src = { img, loaded: false, pending };
+  img.onload = () => {
+    let out = img;
+    if (insetPx > 0) {
+      const w = img.naturalWidth, h = img.naturalHeight;
+      const c = document.createElement('canvas');
+      c.width  = w - 2 * insetPx;
+      c.height = h - 2 * insetPx;
+      c.getContext('2d').drawImage(
+        img,
+        insetPx, insetPx, c.width, c.height,
+        0, 0, c.width, c.height
+      );
+      out = c;
+    }
+    src.img = out;
+    src.loaded = true;
+    for (const t of pending) { t.image = out; t.needsUpdate = true; }
+  };
+  img.src = dataURL;
+  return src;
+}
+function makeTex(src, repeatU, repeatV, rotation = 0) {
+  const t = new THREE.Texture();
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  t.repeat.set(repeatU, repeatV);
+  if (rotation) { t.rotation = rotation; t.center.set(0.5, 0.5); }
+  if (src.loaded) { t.image = src.img; t.needsUpdate = true; }
+  else src.pending.push(t);
+  return t;
+}
+
+const oakSrc = makeImageSource(window.OAK_DATA_URL, 3);
+const cabSrc = makeImageSource(window.CAB_DATA_URL);
+
+// ExtrudeGeometry's default UV generator uses raw shape coordinates (mm here),
+// so `repeat` has to be 1/(tile size in mm).
+const loadOak = (u, v, r = 0) => makeTex(oakSrc, u, v, r);
+const loadCab = (u, v, r = 0) => makeTex(cabSrc, u, v, r);
+
+// oak.png is 820 × 505 — planks run horizontally in the image (along the 820 px
+// axis). Slab/corbel UVs come from ExtrudeGeometry (in mm): u = world.x, v = world.z.
+// Rotate +90° so the photo's plank axis aligns with UV.v = world.z = B leg.
+// Tile size keeps the photo's aspect (505/820).
+const OAK_TILE_V = 750;
+const OAK_TILE_U = OAK_TILE_V * 505 / 820;
+const slabOakTex = loadOak(1 / OAK_TILE_U, 1 / OAK_TILE_V, Math.PI / 2);
+slabOakTex.center.set(0, 0);   // avoid mm-scale UV precision gaps
+
+const oakMat = new THREE.MeshStandardMaterial({
+  map: slabOakTex,
+  color: 0xb89066,    // tint multiplies the photo to darken/warm
+  roughness: 0.55,
+  metalness: 0.02,
+});
+
+// Floor: plain matte grey.
+const floorMat = new THREE.MeshStandardMaterial({
+  color: 0x9a9a9a,
+  roughness: 1.0,
+  metalness: 0.0,
+});
+
+// Cabinet sides: panel texture (dm1415.jpg). Side-wall UVs span shape perimeter
+// (mm) in U and the cabinet height (820 mm) in V — tile size chosen accordingly.
+const cabTex = loadCab(1 / 800, 1 / 820);
+const cabinetMat = new THREE.MeshStandardMaterial({
+  map: cabTex,
+  color: 0xffffff,
+  roughness: 0.55,
+  metalness: 0.0,
+});
+
+const plinthMat = new THREE.MeshStandardMaterial({
+  color: 0x4a4a4a,
+  roughness: 0.7,
+  metalness: 0.05,
+});
+
+// Stool seats use the same oak photo but on CylinderGeometry UVs ([0,1] range);
+// 2 tiles across each seat reads as a few planks.
+const seatOakTex = loadOak(2, 2);
+const stoolSeatMat = new THREE.MeshStandardMaterial({
+  map: seatOakTex,
+  color: 0xb89066,
+  roughness: 0.32,
+  metalness: 0.05,
+});
+const stoolLegMat  = new THREE.MeshStandardMaterial({ color: 0x303030, roughness: 0.9, metalness: 0.0 });
+
+// ----- Floor -----
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+// ----- Walls -----
+const wallMat = new THREE.MeshStandardMaterial({ color: 0xf2ece0, roughness: 0.95 });
+
+// Backdrop wall behind the room.
+const backWall = new THREE.Mesh(new THREE.PlaneGeometry(30, 8), wallMat);
+backWall.position.set(0, 4, -6);
+backWall.receiveShadow = true;
+scene.add(backWall);
+
+// D-side wall — anchors the shelves and grounds the scene on the west side.
+// Built as 3 panels around a 700 mm × 2000 mm opening 600 mm north of the slab.
+const DWALL_THICKNESS = 0.10;
+const DWALL_X = -1.35 - DWALL_THICKNESS / 2;  // +x face flush with the bar's D face
+const DWALL_Y_TOP = 5;
+const DWALL_Z_S  = -7;
+const DWALL_Z_N  =  5;
+const OPENING_W = 0.70;
+const OPENING_H = 2.00;
+// Two openings — sorted south → north.
+const openings = [
+  { s: -1.5 - 0.9 - 0.9,       n: -1.5 - 0.9 },              // 900 mm wide, 900 mm south of C
+  { s: -0.58 + 0.6,            n: -0.58 + 0.6 + OPENING_W }, // 700 mm wide, 600 mm north of E
+];
+
+// East face opaque, west face 25% opaque — wall appears solid from the east
+// (camera side) but you can see through it when looking west → east.
+const dWallOpaque = new THREE.MeshStandardMaterial({ color: 0xf2ece0, roughness: 0.95 });
+const dWallSheer  = new THREE.MeshStandardMaterial({
+  color: 0xf2ece0, roughness: 0.95, transparent: true, opacity: 0.25,
+});
+const dWallMats = [
+  dWallOpaque,   // +x (east — visible from east camera)
+  dWallSheer,    // -x (west — visible from west, see-through)
+  dWallOpaque,   // +y
+  dWallOpaque,   // -y
+  dWallOpaque,   // +z
+  dWallOpaque,   // -z
+];
+function addDWallPanel(zCenter, zSize, yCenter, ySize) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(DWALL_THICKNESS, ySize, zSize), dWallMats);
+  m.position.set(DWALL_X, yCenter, zCenter);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  scene.add(m);
+}
+
+// Solid panels between/around openings (full wall height).
+let prevZ = DWALL_Z_S;
+for (const o of openings) {
+  addDWallPanel((prevZ + o.s) / 2, o.s - prevZ, DWALL_Y_TOP / 2, DWALL_Y_TOP);
+  prevZ = o.n;
+}
+addDWallPanel((prevZ + DWALL_Z_N) / 2, DWALL_Z_N - prevZ, DWALL_Y_TOP / 2, DWALL_Y_TOP);
+
+// Lintel above each opening.
+for (const o of openings) {
+  addDWallPanel((o.s + o.n) / 2, o.n - o.s, (OPENING_H + DWALL_Y_TOP) / 2, DWALL_Y_TOP - OPENING_H);
+}
+
+
+// ----- L-shape island -----
+// Working units: millimeters. We scale the group at the end.
+const S = 0.001;
+const island = new THREE.Group();
+
+// L dimensions (B = short leg along x, C = long leg along z).
+const B_LEN = 2700;             // was 3000
+const C_LEN = 3000;             // was 2700
+const DEPTH = 920;              // shared leg depth
+const CORNER_X = B_LEN - DEPTH; // 1780, inside corner of the L
+
+function lShape(insets, bRadius = 0, aRadius = 0) {
+  const [d1, d2, d3, d4, d5, d6] = insets;
+  const xR = B_LEN  - d2;                      // B-side outer x
+  const yT = C_LEN  - d3;                      // A-side / top  y
+  const xI = CORNER_X + d4;                    // inside corner x (left end of A)
+  const s = new THREE.Shape();
+  s.moveTo(d6, d1);
+
+  // C-front edge → front-right corner (P2)
+  if (bRadius > 0) {
+    s.lineTo(xR - bRadius, d1);
+    s.absarc(xR - bRadius, d1 + bRadius, bRadius, -Math.PI / 2, 0, false);
+  } else {
+    s.lineTo(xR, d1);
+  }
+
+  // B edge → back-right corner (P3)
+  if (bRadius > 0) {
+    s.lineTo(xR, yT - bRadius);
+    s.absarc(xR - bRadius, yT - bRadius, bRadius, 0, Math.PI / 2, false);
+  } else {
+    s.lineTo(xR, yT);
+  }
+
+  // A edge → A-side left corner (P4)
+  if (aRadius > 0) {
+    s.lineTo(xI + aRadius, yT);
+    s.absarc(xI + aRadius, yT - aRadius, aRadius, Math.PI / 2, Math.PI, false);
+  } else {
+    s.lineTo(xI, yT);
+  }
+
+  s.lineTo(xI, DEPTH - d5);
+  s.lineTo(d6, DEPTH - d5);
+  s.closePath();
+  return s;
+}
+
+// Build an L-shaped slab whose TOP face sits at world-y = yTop, extruding downward by `height`.
+function lMesh(insets, height, yTop, material, bevel = false, bRadius = 0, aRadius = 0) {
+  const opts = bevel
+    ? { depth: height, bevelEnabled: true, bevelSize: 4, bevelThickness: 3, bevelSegments: 4 }
+    : { depth: height, bevelEnabled: false };
+  const g = new THREE.ExtrudeGeometry(lShape(insets, bRadius, aRadius), opts);
+  // Default extrudes along +z. Rotate so it extrudes downward in world (-y).
+  g.rotateX(Math.PI / 2);
+  const m = new THREE.Mesh(g, material);
+  m.position.y = yTop;
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+// Plinth (toe-kick): 150 mm tall, set back 20 mm from cabinet face.
+// d6 = 0: D side runs flush to the wall.
+island.add(lMesh([320, 320, 170, 320, 70, 0], 150, 150, plinthMat));
+
+// Cabinet body: 870 mm tall (150 plinth + 870 body + 60 counter = 1080).
+// 300 mm overhang on B/C/F/A, 50 mm on E (almost flush with the slab), D flush to the wall.
+island.add(lMesh([300, 300, 150, 300, 50, 0], 870, 1020, cabinetMat));
+
+// Counter top: 60 mm oak slab, slight bevel on edges, B- and A-side corners rounded R150.
+island.add(lMesh([0, 0, 0, 0, 0, 0], 60, 1080, oakMat, true, 150, 150));
+
+// ----- Stacked drawers on the E face -----
+// E face is the north-facing wall of the E-W arm at shape.y = DEPTH - 50 = 870,
+// running x = 0 → 2080. Two adjacent columns of 5 drawers each (850 mm wide),
+// the first starting 40 mm from the west cabinet edge.
+const E_FACE_Y       = DEPTH - 50;     // 870, north-facing wall of E-W arm
+const DRAWER_W       = 850;
+const DRAWER_COUNT   = 5;
+const DRAWER_GAP     = 3;
+const CAB_Y_BOT      = 150;
+const CAB_Y_TOP      = 1020;
+const DRAWER_H       = (CAB_Y_TOP - CAB_Y_BOT - (DRAWER_COUNT - 1) * DRAWER_GAP) / DRAWER_COUNT;
+
+const drawerLineMat = new THREE.MeshStandardMaterial({ color: 0x303030, roughness: 0.7, metalness: 0.1 });
+const LINE_T   = 5;           // line thickness in mm
+const HANDLE_W = 280;         // handle bar length
+const HANDLE_T    = 10;       // handle bar visible height
+const HANDLE_PROJ = 25;       // how far the handle sticks out from the cabinet face
+
+function addDrawerBar(xC, yC, lenX, lenY, t = LINE_T) {
+  const m = new THREE.Mesh(
+    new THREE.BoxGeometry(lenX, lenY, t),
+    drawerLineMat
+  );
+  m.position.set(xC, yC, E_FACE_Y + t / 2);
+  m.castShadow = true;
+  island.add(m);
+}
+
+const DRAWER_COLUMN_X = [40, 40 + DRAWER_W];   // west edge of each column; columns share a divider line
+for (const colX of DRAWER_COLUMN_X) {
+  const x0 = colX;
+  const x1 = colX + DRAWER_W;
+  const xMid = (x0 + x1) / 2;
+  for (let i = 0; i < DRAWER_COUNT; i++) {
+    const yBot = CAB_Y_BOT + i * (DRAWER_H + DRAWER_GAP);
+    const yTop = yBot + DRAWER_H;
+    const yMid = (yBot + yTop) / 2;
+
+    addDrawerBar(xMid, yBot, DRAWER_W + LINE_T, LINE_T);              // bottom edge
+    addDrawerBar(xMid, yTop, DRAWER_W + LINE_T, LINE_T);              // top edge
+    addDrawerBar(x0,   yMid, LINE_T, DRAWER_H);                       // left edge
+    addDrawerBar(x1,   yMid, LINE_T, DRAWER_H);                       // right edge
+    addDrawerBar(xMid, yTop - 35, HANDLE_W, HANDLE_T, HANDLE_PROJ);   // handle bar
+  }
+}
+
+
+// ----- Sweeping oak corbels under the overhangs on B and C -----
+// Vertical edge flush against the cabinet face, top edge against the counter
+// underside (250 mm horizontal projection), foot 150 mm above the floor.
+// The outer profile is an exponential curve from 0 at the foot to 250 at the top.
+const COR_W = 30;                       // thickness along face direction
+const COR_D = 260;                      // horizontal projection at the top
+const COUNTER_BOTTOM = 1020;
+const COR_FOOT_Y = 150;                 // 150 mm above the floor
+const COR_H = COUNTER_BOTTOM - COR_FOOT_Y;   // 870
+
+const COR_FOOT_X = 10;                  // 10 mm out at the foot
+const corbelShape = new THREE.Shape();
+corbelShape.moveTo(0, 0);               // top-cabinet
+corbelShape.lineTo(COR_D, 0);           // top-outer
+// Exponential curve from (COR_D, 0) down to (COR_FOOT_X, -COR_H), fitted as a
+// Catmull-Rom spline so the polyline facets disappear.
+const K = 16, DENOM = Math.exp(K) - 1, SEGMENTS = 40;
+const curvePts = [];
+for (let i = 1; i <= SEGMENTS; i++) {
+  const t = i / SEGMENTS;               // 0 → top, 1 → foot
+  const y = -COR_H * t;
+  const x = COR_FOOT_X + (COR_D - COR_FOOT_X) * (Math.exp(K * (1 - t)) - 1) / DENOM;
+  curvePts.push(new THREE.Vector2(x, y));
+}
+corbelShape.splineThru(curvePts);
+corbelShape.lineTo(0, -COR_H);          // foot back toward the cabinet
+corbelShape.closePath();                // vertical edge back up to (0, 0)
+const corbelGeom = new THREE.ExtrudeGeometry(corbelShape, {
+  depth: COR_W, bevelEnabled: false,
+});
+
+// normalSign: which way the corbel projects from the face.
+//   faceAxis='x', +1 → +x; -1 → -x.
+//   faceAxis='z', -1 → -z (default for C); +1 → +z.
+function addCorbels(faceAxis, faceCoord, alongStart, alongEnd, count, normalSign = -1, useEndpoints = false) {
+  const len = alongEnd - alongStart;
+  for (let i = 0; i < count; i++) {
+    const along = useEndpoints && count > 1
+      ? alongStart + len * i / (count - 1)
+      : alongStart + len * (i + 0.5) / count;
+    const m = new THREE.Mesh(corbelGeom, oakMat);
+    if (faceAxis === 'x') {
+      if (normalSign < 0) m.rotation.y = Math.PI;     // flip +x to -x
+      m.position.set(faceCoord, COUNTER_BOTTOM, along - COR_W / 2);
+    } else {
+      m.rotation.y = normalSign < 0 ? Math.PI / 2 : -Math.PI / 2;
+      m.position.set(along - COR_W / 2, COUNTER_BOTTOM, faceCoord);
+    }
+    m.castShadow = true; m.receiveShadow = true;
+    island.add(m);
+  }
+}
+
+addCorbels('x', 2400, 400, 2750, 5, +1, true);   // B side, 5 corbels, endpoints 100 mm from cabinet edges
+addCorbels('z',  300, 100, 2300, 5, -1, true);   // C side, 5 corbels, endpoints 100 mm from cabinet edges
+addCorbels('x', 2080, 2750, 1100, 4, -1, true);   // F side, 4 corbels, 100 mm from north edge, 550 mm spacing
+
+// ----- Brushed-brass 1" foot rest pipe along B and C -----
+const PIPE_R      = 16;     // ~32 mm OD (nominal 1" pipe)
+const PIPE_Y      = 180;    // pipe centre 180 mm above floor
+const PIPE_OFFSET = 160;    // pipe centre 160 mm out from cabinet face
+
+const pipeMat = new THREE.MeshStandardMaterial({
+  color: 0x9a9a9a,
+  roughness: 0.4,
+  metalness: 0.85,
+});
+function addFootRest(faceAxis, faceCoord, alongStart, alongEnd, outwardSign, offset = PIPE_OFFSET) {
+  const len      = alongEnd - alongStart;
+  const alongMid = (alongStart + alongEnd) / 2;
+  const offsetC  = faceCoord + outwardSign * offset;
+
+  const pipeGeom = new THREE.CylinderGeometry(PIPE_R, PIPE_R, len, 24);
+  const pipe = new THREE.Mesh(pipeGeom, pipeMat);
+  if (faceAxis === 'x') {
+    pipe.rotation.x = Math.PI / 2;   // align pipe with z
+    pipe.position.set(offsetC, PIPE_Y, alongMid);
+  } else {
+    pipe.rotation.z = Math.PI / 2;   // align pipe with x
+    pipe.position.set(alongMid, PIPE_Y, offsetC);
+  }
+  pipe.castShadow = true; pipe.receiveShadow = true;
+  island.add(pipe);
+}
+
+// Pipe centerlines: B at x = 2400 + 160 = 2560, C at z = 300 - 160 = 140,
+// A at z = 2850 + 90 = 2940. Two 100 mm bends wrap both outside corners.
+const BEND_R = 100;
+addFootRest('x', 2400, /*z*/  240, 2840, +1);          // B side, between both bends
+addFootRest('z',  300, /*x*/    0, 2460, -1);          // C side, to corner 1
+addFootRest('z', 2850, /*x*/ 2020, 2460, +1, 90);      // A side, bend3 → corner 2
+addFootRest('x', 2080, /*z*/  880, 2840, -1);          // F side (in concave notch)
+
+// Wall-to-pipe brackets — placed at the midpoint between each pair of adjacent
+// corbels so the brackets line up with the corbels rather than splitting them.
+const bracketGeom = new THREE.CylinderGeometry(6, 6, PIPE_OFFSET, 14);
+function addBracket(faceAxis, faceCoord, along, outwardSign, offset = PIPE_OFFSET) {
+  const halfOff = faceCoord + outwardSign * offset / 2;
+  const geom = offset === PIPE_OFFSET
+    ? bracketGeom
+    : new THREE.CylinderGeometry(6, 6, offset, 14);
+  const b = new THREE.Mesh(geom, pipeMat);
+  if (faceAxis === 'x') {
+    b.rotation.z = Math.PI / 2;
+    b.position.set(halfOff, PIPE_Y, along);
+  } else {
+    b.rotation.x = Math.PI / 2;
+    b.position.set(along, PIPE_Y, halfOff);
+  }
+  b.castShadow = true;
+  island.add(b);
+}
+// B: 6 corbels at shape.y = 400, 870, 1340, 1810, 2280, 2750.
+for (const sy of [693.75, 1281.25, 1868.75, 2456.25]) addBracket('x', 2400, sy, +1);
+// C: 5 corbels at shape.x = 100, 650, 1200, 1750, 2300.
+for (const sx of [375, 925, 1475, 2025])        addBracket('z',  300, sx, -1);
+// F: 4 corbels at shape.y = 1100, 1650, 2200, 2750.
+for (const sy of [1375, 1925, 2475])            addBracket('x', 2080, sy, -1);
+
+const bendGeom = new THREE.TorusGeometry(BEND_R, PIPE_R, 14, 24, Math.PI / 2);
+
+// Corner 1 — B ↔ C bend (outside corner near +x, -z), centre (2460, 240).
+const bend1 = new THREE.Mesh(bendGeom, pipeMat);
+bend1.rotation.x = -Math.PI / 2;                       // arc goes from +x to -z
+bend1.position.set(2460, PIPE_Y, 240);
+bend1.castShadow = true;
+island.add(bend1);
+
+// Corner 2 — B ↔ A bend (outside corner near +x, +z), centre (2460, 2840).
+const bend2 = new THREE.Mesh(bendGeom, pipeMat);
+bend2.rotation.x =  Math.PI / 2;                       // arc goes from +x to +z
+bend2.position.set(2460, PIPE_Y, 2840);
+bend2.castShadow = true;
+island.add(bend2);
+
+// Corner 3 — A pipe inside-corner end bends into the cabinet (F/A junction).
+// Arc from (1910, 2940) on the A pipe to (1810, 2840), buried in the corner.
+const bend3 = new THREE.Mesh(bendGeom, pipeMat);
+bend3.rotation.x = Math.PI / 2;
+bend3.rotation.z = Math.PI / 2;
+bend3.position.set(2020, PIPE_Y, 2840);
+bend3.castShadow = true;
+island.add(bend3);
+
+// ----- Brass floor supports for the foot rest -----
+// Short post from floor up to the underside of the pipe, plus a small base disc.
+const supportH    = PIPE_Y - PIPE_R;              // 180 - 16 = 164 mm
+const supportGeom = new THREE.CylinderGeometry(6, 6, supportH, 16);
+const baseGeom    = new THREE.CylinderGeometry(13, 13, 3, 20);
+
+function addFloorSupport(x, z) {
+  const post = new THREE.Mesh(supportGeom, pipeMat);
+  post.position.set(x, supportH / 2, z);
+  post.castShadow = true; post.receiveShadow = true;
+  island.add(post);
+
+  const base = new THREE.Mesh(baseGeom, pipeMat);
+  base.position.set(x, 2, z);
+  base.castShadow = true; base.receiveShadow = true;
+  island.add(base);
+}
+
+// Mid-arc points of the bends (45° around each centre, R*sin(π/4) ≈ 70.7).
+const bendMid = BEND_R * Math.SQRT1_2;             // 70.7 mm
+
+// Bend supports — kept at the four pipe corners.
+addFloorSupport(2460 + bendMid, 240 - bendMid);             // outside corner 1
+addFloorSupport(2460 + bendMid, 2840 + bendMid);            // outside corner 2
+addFloorSupport(2020 - bendMid, 2840 + bendMid);            // bend3 (A → F)
+
+// Mid-run floor supports at each corbel midpoint (matching the wall brackets).
+for (const sy of [693.75, 1281.25, 1868.75, 2456.25]) addFloorSupport(2560, sy);  // B pipe
+for (const sx of [375, 925, 1475, 2025])        addFloorSupport(sx, 140);    // C pipe
+for (const sy of [1375, 1925, 2475])            addFloorSupport(1920, sy);  // F pipe
+
+// ----- Place island and scale to meters -----
+island.scale.setScalar(S);
+// Centre the island around the origin (B is 2700 long along x, C is 3000 along z).
+island.position.set(-B_LEN / 2 * S, 0, -C_LEN / 2 * S);
+scene.add(island);
+
+// ----- Letter reference tags on the floor (just the letter, no disk) -----
+function makeFloorLabel(text, x, z, size = 0.13) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'rgba(20, 20, 20, 0.7)';
+  ctx.font = 'bold 220px -apple-system, "Helvetica Neue", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 142);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(x, 0.005, z);
+  mesh.renderOrder = 10;
+  return mesh;
+}
+
+const halfX = B_LEN / 2 * S;
+const halfZ = C_LEN / 2 * S;
+
+// Letters sit 100 mm out from each cabinet wall (under the slab overhang).
+// D — flush with the wall, no overhang
+scene.add(makeFloorLabel('D', -halfX - 0.10, -halfZ + (DEPTH / 2) * S));
+// C — cabinet face at world.z = -1.2
+scene.add(makeFloorLabel('C', ((0 + (B_LEN - 300)) / 2) * S - halfX, -halfZ + 300 * S - 0.10));
+// B — cabinet face at world.x = +1.05; letter between adjacent stools
+scene.add(makeFloorLabel('B', -halfX + (B_LEN - 300) * S + 0.10, 0.31));
+// A — cabinet face at world.z = +1.35
+scene.add(makeFloorLabel('A', ((CORNER_X + 300 + (B_LEN - 300)) / 2) * S - halfX, -halfZ + (C_LEN - 150) * S + 0.10));
+// E — cabinet face at shape.y = DEPTH - 50 = 870 (almost flush with the slab)
+scene.add(makeFloorLabel('E', ((0 + (CORNER_X + 300)) / 2) * S - halfX, -halfZ + (DEPTH - 50) * S + 0.10));
+// F — cabinet face at world.x = +0.73 (inside concave notch, look -x)
+scene.add(makeFloorLabel('F', -halfX + (CORNER_X + 300) * S - 0.10, (((DEPTH - 50) + (C_LEN - 150)) / 2) * S - halfZ));
+
+// ----- Bar stools -----
+function makeStool(x, z, rotY = 0) {
+  const g = new THREE.Group();
+
+  const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.04, 36), stoolSeatMat);
+  seat.position.y = 0.75;
+  seat.castShadow = true; seat.receiveShadow = true;
+  g.add(seat);
+
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.73, 18), stoolLegMat);
+  post.position.y = 0.365;
+  post.castShadow = true;
+  g.add(post);
+
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.02, 36), stoolLegMat);
+  base.position.y = 0.012;
+  base.castShadow = true; base.receiveShadow = true;
+  g.add(base);
+
+  // 1/3-circle footrest centered on local +z (toward the bar for both stool sets).
+  const ringGeom = new THREE.TorusGeometry(0.16, 0.012, 10, 28, 2 * Math.PI / 3);
+  ringGeom.rotateZ(Math.PI / 6);
+  ringGeom.rotateX(Math.PI / 2);
+  const ring = new THREE.Mesh(ringGeom, stoolLegMat);
+  ring.position.y = 0.34;
+  ring.castShadow = true;
+  g.add(ring);
+
+  // Two radial arms tying the arc back to the central post. Arms start inside
+  // the post (so the inner cap is hidden) and end at the arc centerline; a
+  // small sphere welds each arm to the arc end.
+  const POST_R = 0.024, RING_R = 0.16, TUBE_R = 0.012;
+  const armLen = RING_R;
+  const armGeom = new THREE.CylinderGeometry(TUBE_R, TUBE_R, armLen, 12);
+  const jointGeom = new THREE.SphereGeometry(TUBE_R, 12, 10);
+  const up = new THREE.Vector3(0, 1, 0);
+  for (const sign of [1, -1]) {
+    const dir = new THREE.Vector3(sign * Math.sqrt(3) / 2, 0, 0.5);  // unit radial
+    const arm = new THREE.Mesh(armGeom, stoolLegMat);
+    arm.position.set(dir.x * armLen / 2, 0.34, dir.z * armLen / 2);
+    arm.quaternion.setFromUnitVectors(up, dir);
+    arm.castShadow = true;
+    g.add(arm);
+
+    const joint = new THREE.Mesh(jointGeom, stoolLegMat);
+    joint.position.set(dir.x * RING_R, 0.34, dir.z * RING_R);
+    joint.castShadow = true;
+    g.add(joint);
+  }
+
+  g.position.set(x, 0, z);
+  g.rotation.y = rotY;
+  return g;
+}
+
+// 4 stools along the outer long edge of C — placed at the midpoints between
+// the 5 B-side corbels (shape.y = 400 → 2750, step 587.5 mm).
+const cOuterX = B_LEN / 2 * S + 0.20;     // 200 mm out from the counter edge
+const B_CORBEL_START_Z = 400;
+const B_CORBEL_STEP    = (2750 - 400) / 4;
+for (let i = 0; i < 4; i++) {
+  const shapeZ = B_CORBEL_START_Z + B_CORBEL_STEP * (i + 0.5);
+  const worldZ = (shapeZ - C_LEN / 2) * S;
+  scene.add(makeStool(cOuterX, worldZ, -Math.PI / 2));   // seats face the counter (-x)
+}
+
+// 4 stools along the C (south) face — placed at the midpoints between the 5
+// C-side corbels, then shifted 275 mm east.
+const bFrontZ = -C_LEN / 2 * S - 0.20;
+const C_CORBEL_START_X = 100;
+const C_CORBEL_STEP    = (2300 - 100) / 4;
+for (let i = 0; i < 4; i++) {
+  const shapeX = C_CORBEL_START_X + C_CORBEL_STEP * (i + 0.5);
+  const worldX = (shapeX - B_LEN / 2) * S + 0.275;
+  scene.add(makeStool(worldX, bFrontZ, 0));
+}
+
+// 3 stools along the F inside slab edge (slab edge at shape x = CORNER_X = 1780
+// → world x = +0.43). Stools sit 200 mm west of the edge; footrests face +x.
+const fStoolX = (CORNER_X - B_LEN / 2) * S - 0.20;
+const fStoolZs = [-0.1, 0.8];
+for (const z of fStoolZs) scene.add(makeStool(fStoolX, z, Math.PI / 2));
+
+// ----- Pendant lights over the C run -----
+// C unit world x: 0.43 → 1.35 m, center ≈ 0.89.
+// Pendants live in the C-only z-range (z > B-front, ~-0.58 → +1.5).
+const pendantShadeMat = new THREE.MeshStandardMaterial({ color: 0x303030, roughness: 0.9 });
+const pendantCordMat  = new THREE.MeshStandardMaterial({ color: 0x202020, roughness: 0.9 });
+const pendantBulbMat  = new THREE.MeshBasicMaterial({ color: 0xfff0c8 });
+
+function addPendant(x, z) {
+  const yCordTop = 2.6;
+  const yShadeTop = 1.95;
+  const yShadeBot = 1.78;
+
+  const cordH = yCordTop - yShadeTop;
+  const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, cordH, 8), pendantCordMat);
+  cord.position.set(x, (yCordTop + yShadeTop) / 2, z);
+  scene.add(cord);
+
+  const shade = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.055, 0.105, yShadeTop - yShadeBot, 24, 1, true),
+    pendantShadeMat
+  );
+  shade.material.side = THREE.DoubleSide;
+  shade.position.set(x, (yShadeTop + yShadeBot) / 2, z);
+  shade.castShadow = true;
+  scene.add(shade);
+
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 10), pendantBulbMat);
+  bulb.position.set(x, yShadeBot + 0.015, z);
+  scene.add(bulb);
+
+  const light = new THREE.PointLight(0xffd5a0, 2.5, 5.5, 2);
+  light.position.set(x, yShadeBot - 0.02, z);
+  light.castShadow = true;
+  light.shadow.mapSize.set(512, 512);
+  scene.add(light);
+}
+
+// Pendants spread evenly along the L-shape centerline: run along C at
+// z = C_CENTER_Z, turn at the L vertex, continue along B at x = B_CENTER_X.
+// The middle pendant sits exactly at the corner so it stays Z-aligned with
+// the C pendants on one side and X-aligned with the B pendants on the other.
+const C_CENTER_Z = -1.04;
+const B_CENTER_X =  0.89;
+const C_START_X  = -1.35;
+const B_END_Z    =  1.5;
+const C_ARM_LEN = B_CENTER_X - C_START_X;     // 2.24
+const B_ARM_LEN = B_END_Z   - C_CENTER_Z;     // 2.54
+const TOTAL_LEN = C_ARM_LEN + B_ARM_LEN;       // 4.78
+const STEP = TOTAL_LEN / 5;                    // 0.956
+for (let i = -2; i <= 2; i++) {
+  const s = C_ARM_LEN + i * STEP;
+  let x = s < C_ARM_LEN ? C_START_X + s : B_CENTER_X;
+  const z = s < C_ARM_LEN ? C_CENTER_Z : C_CENTER_Z + (s - C_ARM_LEN);
+  if (i === -2) x += 0.2;   // pull the westmost lamp 200 mm east
+  if (i === -1) x += 0.1;   // shift its neighbour 100 mm east
+  addPendant(x, z);
+}
+
+// ----- Tea/coffee cups on the countertop -----
+function makeCup(bodyColor, liquidColor) {
+  const g = new THREE.Group();
+  const bodyR = 0.035, baseR = 0.030, h = 0.085;
+  const wallMat = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.4, metalness: 0.05 });
+  const liquidMat = new THREE.MeshStandardMaterial({ color: liquidColor, roughness: 0.3, metalness: 0.05 });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(bodyR, baseR, h, 24), wallMat);
+  body.position.y = h / 2;
+  body.castShadow = true;
+  g.add(body);
+  const liquid = new THREE.Mesh(
+    new THREE.CylinderGeometry(bodyR * 0.95, bodyR * 0.95, 0.003, 24),
+    liquidMat
+  );
+  liquid.position.y = h - 0.003;
+  g.add(liquid);
+  const handle = new THREE.Mesh(new THREE.TorusGeometry(0.020, 0.005, 8, 16), wallMat);
+  handle.position.set(bodyR + 0.018, h * 0.55, 0);
+  handle.castShadow = true;
+  g.add(handle);
+  return g;
+}
+
+const cups = [
+  { x: -0.50, z: -1.20, body: 0xf2efe9, liquid: 0x3a2010, rotY:  0.6 },   // white, coffee
+  { x: -1.00, z: -0.80, body: 0x2a3a5a, liquid: 0x6b4a2a, rotY: -1.2 },   // blue, tea
+  { x:  0.30, z: -1.00, body: 0xe8dfc8, liquid: 0x4a2818, rotY:  2.1 },   // cream, coffee
+  { x:  0.90, z: -0.20, body: 0xb86a4a, liquid: 0x9b6633, rotY:  0.4 },   // terracotta, tea
+  { x:  0.70, z:  0.70, body: 0x1a1a1a, liquid: 0x2a1808, rotY: -0.7 },   // black, espresso
+  { x:  1.00, z:  1.20, body: 0xf2efe9, liquid: 0x6b4a2a, rotY:  1.5 },   // white, tea
+];
+const SLAB_TOP_Y = 1.08;
+for (const c of cups) {
+  const cup = makeCup(c.body, c.liquid);
+  cup.position.set(c.x, SLAB_TOP_Y, c.z);
+  cup.rotation.y = c.rotY;
+  scene.add(cup);
+}
+
+// Water glasses (reusing the makeGlass helper from the shelf items).
+const waterGlasses = [
+  { x: -0.20, z: -1.20 },
+  { x:  0.50, z: -0.85 },
+  { x: -0.85, z: -1.10 },
+  { x:  0.95, z:  0.20 },
+  { x:  0.70, z:  1.05 },
+];
+const coasterMat = new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.8, metalness: 0.05 });
+for (const w of waterGlasses) {
+  const coaster = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.052, 0.004, 24), coasterMat);
+  coaster.position.set(w.x, SLAB_TOP_Y + 0.002, w.z);
+  coaster.castShadow = true;
+  coaster.receiveShadow = true;
+  scene.add(coaster);
+
+  const wg = makeGlass(0.14, 0.040);
+  wg.position.set(w.x, SLAB_TOP_Y + 0.004, w.z);
+  scene.add(wg);
+}
+
+// Fruit bowl on the slab.
+function makeFruitBowl(x, z) {
+  const g = new THREE.Group();
+  const bowlMat = new THREE.MeshStandardMaterial({ color: 0xeae2d4, roughness: 0.5, metalness: 0.05 });
+  const bowl = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.11, 0.08, 0.035, 32),
+    bowlMat
+  );
+  bowl.position.y = 0.018;
+  bowl.castShadow = true;
+  bowl.receiveShadow = true;
+  g.add(bowl);
+  const fruits = [
+    { color: 0xd84a2a, r: 0.030, dx: -0.040, dz:  0.000 },
+    { color: 0xe69430, r: 0.032, dx:  0.030, dz: -0.025 },
+    { color: 0xc8a830, r: 0.028, dx:  0.025, dz:  0.030 },
+    { color: 0xa83b2a, r: 0.026, dx: -0.010, dz:  0.040 },
+  ];
+  for (const f of fruits) {
+    const fruit = new THREE.Mesh(
+      new THREE.SphereGeometry(f.r, 16, 12),
+      new THREE.MeshStandardMaterial({ color: f.color, roughness: 0.5, metalness: 0.05 })
+    );
+    fruit.position.set(f.dx, 0.035 + f.r * 0.6, f.dz);
+    fruit.castShadow = true;
+    g.add(fruit);
+  }
+  g.position.set(x, SLAB_TOP_Y, z);
+  scene.add(g);
+}
+makeFruitBowl(-0.25, -0.95);
+
+// Napkin holder.
+function makeNapkinHolder(x, z) {
+  const g = new THREE.Group();
+  const metalMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.3, metalness: 0.7 });
+  const paperMat = new THREE.MeshStandardMaterial({ color: 0xf5f0e6, roughness: 0.9 });
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.005, 0.095), metalMat);
+  plate.position.y = 0.0025;
+  plate.castShadow = true;
+  plate.receiveShadow = true;
+  g.add(plate);
+  for (const dx of [-0.05, 0.05]) {
+    const side = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.045, 0.085), metalMat);
+    side.position.set(dx, 0.028, 0);
+    side.castShadow = true;
+    g.add(side);
+  }
+  const napkins = new THREE.Mesh(new THREE.BoxGeometry(0.088, 0.05, 0.078), paperMat);
+  napkins.position.y = 0.030;
+  napkins.castShadow = true;
+  g.add(napkins);
+  g.position.set(x, SLAB_TOP_Y, z);
+  scene.add(g);
+}
+makeNapkinHolder(0.8, 0.4);
+
+// ----- Compass marker on the floor (in the E/F concave notch) -----
+// Establishes a shared direction language: +z = N, -z = S, +x = E, -x = W.
+function makeCompassTexture(px = 512) {
+  const c = document.createElement('canvas');
+  c.width = c.height = px;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'rgba(154, 154, 154, 1.0)';   // match the general floor grey
+  ctx.beginPath(); ctx.arc(px / 2, px / 2, px / 2 - 8, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(30, 30, 30, 0.8)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(px / 2, px / 2, px / 2 - 8, 0, Math.PI * 2); ctx.stroke();
+  ctx.save();
+  ctx.strokeStyle = 'rgba(30, 30, 30, 0.8)';
+  ctx.lineWidth = 2;
+  const lineStart = px * 0.22;
+  const lineEnd   = px * 0.78;
+  ctx.beginPath();
+  ctx.moveTo(px / 2, lineStart); ctx.lineTo(px / 2, lineEnd);
+  ctx.moveTo(lineStart, px / 2); ctx.lineTo(lineEnd, px / 2);
+  ctx.stroke();
+  ctx.restore();
+  // Canvas top maps to world -z after rotation.x = -π/2, so 'S' goes on top
+  // and 'N' on bottom for the label to read correctly when viewed from above.
+  ctx.fillStyle = 'rgba(20, 20, 20, 0.7)';
+  ctx.font = `bold ${Math.floor(px * 0.14)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('S', px / 2,        px * 0.13);
+  ctx.fillText('N', px / 2,        px * 0.87);
+  ctx.fillText('W', px * 0.13,     px / 2);
+  ctx.fillText('E', px * 0.87,     px / 2);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const compass = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.7, 0.7),
+  new THREE.MeshStandardMaterial({
+    map: makeCompassTexture(),
+    transparent: true,
+    depthWrite: false,
+    roughness: 1.0,
+    metalness: 0.0,
+  })
+);
+compass.receiveShadow = true;
+compass.rotation.x = -Math.PI / 2;
+compass.position.set(-0.4, 0.005, 0.5);
+scene.add(compass);
+
+// ----- Wall shelves above D side -----
+// 3 oak shelves stacked above the counter top, mounted along the D (west) face.
+const SHELF_W      = 0.92;     // along z
+const SHELF_D      = 0.22;     // along x (depth out from wall)
+const SHELF_T      = 0.040;    // thickness
+const SHELF_Z      = -1.04;    // centered on D face z-midpoint
+const SHELF_X      = -1.35 + SHELF_D / 2;   // back flush with the D wall plane
+const SHELF_Y_BASE = 1.08 + 0.45;            // 45 cm above counter top
+const SHELF_GAP    = 0.35;
+
+// Separate oak texture for shelves — BoxGeometry uses 0-1 UVs so repeat needs
+// world-scale values, not the mm-scale repeat the slab uses.
+const shelfOakTex = loadOak(0.75, 0.25, Math.PI / 2);   // rotated 90° so planks run along the long axis
+const shelfOakMat = new THREE.MeshStandardMaterial({
+  map: shelfOakTex,
+  color: 0xb89066,
+  roughness: 0.32,
+  metalness: 0.05,
+});
+
+for (let i = 0; i < 3; i++) {
+  const shelf = new THREE.Mesh(
+    new THREE.BoxGeometry(SHELF_D, SHELF_T, SHELF_W),
+    shelfOakMat
+  );
+  shelf.position.set(SHELF_X, SHELF_Y_BASE + i * SHELF_GAP, SHELF_Z);
+  shelf.castShadow = true;
+  shelf.receiveShadow = true;
+  scene.add(shelf);
+}
+
+// ----- Bottles and glasses on the shelves -----
+function makeBottle(color, height) {
+  const g = new THREE.Group();
+  const bodyH = height * 0.65;
+  const shoulderH = height * 0.08;
+  const neckH = height * 0.22;
+  const capH = height * 0.05;
+  const bodyR = 0.035, neckR = 0.011;
+  const glassMat = new THREE.MeshStandardMaterial({ color, roughness: 0.25, metalness: 0.08 });
+  const capMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.6 });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(bodyR, bodyR, bodyH, 18), glassMat);
+  body.position.y = bodyH / 2;
+  const shoulder = new THREE.Mesh(new THREE.CylinderGeometry(neckR, bodyR, shoulderH, 18), glassMat);
+  shoulder.position.y = bodyH + shoulderH / 2;
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(neckR, neckR, neckH, 14), glassMat);
+  neck.position.y = bodyH + shoulderH + neckH / 2;
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(neckR * 1.15, neckR * 1.15, capH, 14), capMat);
+  cap.position.y = bodyH + shoulderH + neckH + capH / 2;
+  for (const m of [body, shoulder, neck, cap]) { m.castShadow = true; g.add(m); }
+  return g;
+}
+
+function makeGlass(height, radius) {
+  const g = new THREE.Group();
+  const m = new THREE.MeshStandardMaterial({
+    color: 0xc8d8dc, roughness: 0.1, metalness: 0.15,
+    transparent: true, opacity: 0.55,
+  });
+  const cup = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 0.82, height, 20), m);
+  cup.position.y = height / 2;   // group origin is the base of the glass
+  cup.castShadow = true;
+  g.add(cup);
+  return g;
+}
+
+// shelfIdx, item factory, z position along the shelf
+const shelfItems = [
+  // Bottom shelf — liquor bottles + one short glass
+  [0, () => makeBottle(0x6b3a1a, 0.30), -1.32],
+  [0, () => makeBottle(0x2a4a2c, 0.24), -1.10],
+  [0, () => makeBottle(0xe6d699, 0.27), -0.88],
+  [0, () => makeGlass(0.10, 0.045),     -0.68],
+  // Middle shelf — row of glassware
+  [1, () => makeGlass(0.13, 0.038),     -1.35],
+  [1, () => makeGlass(0.13, 0.038),     -1.18],
+  [1, () => makeGlass(0.13, 0.038),     -1.01],
+  [1, () => makeGlass(0.13, 0.038),     -0.84],
+  [1, () => makeGlass(0.13, 0.038),     -0.67],
+  // Top shelf — taller bottles
+  [2, () => makeBottle(0x4a1f2a, 0.32), -1.30],
+  [2, () => makeBottle(0xb89066, 0.27), -1.06],
+  [2, () => makeBottle(0x1c2a4a, 0.30), -0.82],
+];
+for (const [shelfIdx, make, z] of shelfItems) {
+  const item = make();
+  const yTop = SHELF_Y_BASE + shelfIdx * SHELF_GAP + SHELF_T / 2;
+  item.position.set(SHELF_X, yTop, z);
+  scene.add(item);
+}
+
+// ----- Render loop -----
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+(function animate() {
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+})();
+</script>
+</body>
+</html>
