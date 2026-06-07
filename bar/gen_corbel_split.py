@@ -5,12 +5,12 @@ Part 1 (top): female socket.   Part 2 (bottom): male tail.
 """
 import math, numpy as np
 from datetime import datetime
-from shapely.geometry import Polygon, box
+from shapely.geometry import Polygon, box, LineString
 from trimesh.creation import extrude_polygon as extrude
 
 COR_D=260; COR_H=870; COR_FOOT_X=20; COR_TIP=10; K=16
 DENOM=np.exp(K)-1
-TEMPLATE_H=400; THK=7.0; BORDER=15; N=500; R_CORNER=6
+TEMPLATE_H=400; THK=7.0; BORDER=20; N=200; R_CORNER=3
 BASE=f'/Users/igorkr/dev/cp/adamit-club/bar/corbel_template_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
 
 TAIL_BASE = 10
@@ -87,6 +87,11 @@ outer_1a = clip(outer_top, left_clip).difference(socket2)   # Part 1A: socket
 outer_1b = clip(outer_top, right_clip).union(tail2)          # Part 1B: tail
 hole_1a  = clip(hole_top,  left_clip)
 hole_1b  = clip(hole_top,  right_clip)
+
+# Diagonal support through Part 1A hole (bottom-left → top-right)
+_hb = hole_1a.bounds
+diag_strip = LineString([(_hb[0], _hb[3]), ((_hb[0]+_hb[2])/2, (_hb[1]+_hb[3])/2)]).buffer(BORDER/2, cap_style=2)
+hole_1a = hole_1a.difference(diag_strip)
 
 def make_mesh(outer_p, hole_p, extra_holes=None):
     extra_holes = extra_holes or []
