@@ -616,16 +616,17 @@ const COR_FOOT_Y = 150;                 // 150 mm above the floor
 const COR_H = COUNTER_BOTTOM - COR_FOOT_Y;   // 870
 
 const COR_FOOT_X = 20;                  // 20 mm out at the foot
+const COR_TIP = 10;                     // flat thickness at the outer tip
 const corbelShape = new THREE.Shape();
-corbelShape.moveTo(0, 0);               // top-cabinet
-corbelShape.lineTo(COR_D, 0);           // top-outer
-// Exponential curve from (COR_D, 0) down to (COR_FOOT_X, -COR_H), fitted as a
-// Catmull-Rom spline so the polyline facets disappear.
+corbelShape.moveTo(0, 0);               // top-cabinet (flush with countertop bottom)
+corbelShape.lineTo(COR_D, 0);           // top-outer top (flush)
+corbelShape.lineTo(COR_D, -COR_TIP);    // top-outer bottom (10 mm flat face)
+// Exponential curve from (COR_D, -COR_TIP) down to (COR_FOOT_X, -COR_H).
 const K = 16, DENOM = Math.exp(K) - 1, SEGMENTS = 40;
 const curvePts = [];
 for (let i = 1; i <= SEGMENTS; i++) {
   const t = i / SEGMENTS;               // 0 → top, 1 → foot
-  const y = -COR_H * t;
+  const y = -COR_TIP - (COR_H - COR_TIP) * t;
   const x = COR_FOOT_X + (COR_D - COR_FOOT_X) * (Math.exp(K * (1 - t)) - 1) / DENOM;
   curvePts.push(new THREE.Vector2(x, y));
 }
