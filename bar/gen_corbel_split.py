@@ -11,7 +11,7 @@ from dovetail import dovetail_poly
 
 COR_D=260; COR_H=870; COR_FOOT_X=20; COR_TIP=10; K=16
 DENOM=np.exp(K)-1
-TEMPLATE_H=400; THK=8.0; BORDER=20; N=200; R_CORNER=3
+TEMPLATE_H=400; THK=8.0; BORDER=17; N=200; R_CORNER=3
 BASE=f'/Users/igorkr/dev/cp/adamit-club/bar/corbel_template_{datetime.now().strftime("%H%M%S")}'
 
 TAIL_BASE = 7; TAIL_D = 7; TAIL_TIP = 9; CL = 0.01
@@ -73,6 +73,9 @@ hole_3  = clip(hole_top,  right_clip)
 _hb = hole_1.bounds
 diag_strip = LineString([(_hb[0], _hb[3]), ((_hb[0]+_hb[2])/2, (_hb[1]+_hb[3])/2)]).buffer(BORDER/2, cap_style=2)
 hole_1 = hole_1.difference(diag_strip)
+hole_1 = hole_1.buffer(R_CORNER, join_style=1, resolution=64).buffer(-R_CORNER, join_style=1, resolution=64)
+hole_1 = hole_1.buffer(-R_CORNER, join_style=1, resolution=64).buffer(R_CORNER, join_style=1, resolution=64)
+hole_1 = hole_1.intersection(outer_1)
 
 def make_mesh(outer_p, hole_p, extra_holes=None):
     extra_holes = extra_holes or []
