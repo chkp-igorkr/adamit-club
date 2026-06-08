@@ -3,23 +3,20 @@ gen_corbel_split.py
 Corbel template split into 2 parts with a sliding dovetail joint.
 Part 1 (top): female socket.   Part 2 (bottom): male tail.
 """
-import math, numpy as np
+import numpy as np
 from datetime import datetime
 from shapely.geometry import Polygon, box, LineString
 from trimesh.creation import extrude_polygon as extrude
+from dovetail import dovetail_poly
 
 COR_D=260; COR_H=870; COR_FOOT_X=20; COR_TIP=10; K=16
 DENOM=np.exp(K)-1
-TEMPLATE_H=400; THK=7.0; BORDER=20; N=200; R_CORNER=3
-BASE=f'/Users/igorkr/dev/cp/adamit-club/bar/corbel_template_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+TEMPLATE_H=400; THK=8.0; BORDER=20; N=200; R_CORNER=3
+BASE=f'/Users/igorkr/dev/cp/adamit-club/bar/corbel_template_{datetime.now().strftime("%H%M%S")}'
 
-TAIL_BASE = 10
-TAIL_D    = 10
-ANGLE     = 8
-CL        = 0.01
-D_SPLIT   = 200
-TAIL_TIP  = TAIL_BASE + 2*TAIL_D*math.tan(math.radians(ANGLE))
-GAP       = 0.0   # socket opens directly at split face
+TAIL_BASE = 7; TAIL_D = 7; TAIL_TIP = 9; CL = 0.01
+TAIL_SPACING = 14   # centre-to-centre spacing between the two tails on each split face
+D_SPLIT      = 180  # depth of the y-split between Part 1 (top) and Part 2 (bottom)
 
 def xc(d):
     if d<=COR_TIP: return float(COR_D)
@@ -35,21 +32,12 @@ hole_poly =hole_poly.buffer(-R_CORNER,join_style=1,resolution=64).buffer(R_CORNE
 
 x_split=xc(D_SPLIT); cx=x_split/2
 
-# Male tail on Part 2 (protrudes upward into Part 1)
-tail=Polygon([
-    (cx-TAIL_BASE/2, -D_SPLIT),
-    (cx+TAIL_BASE/2, -D_SPLIT),
-    (cx+TAIL_TIP/2,  -D_SPLIT+TAIL_D),
-    (cx-TAIL_TIP/2,  -D_SPLIT+TAIL_D),
-])
-
-# Female socket on Part 1 — closed GAP mm above split face = true interior ring
-socket=Polygon([
-    (cx-TAIL_BASE/2-CL, -D_SPLIT+GAP),
-    (cx+TAIL_BASE/2+CL, -D_SPLIT+GAP),
-    (cx+TAIL_TIP/2+CL,  -D_SPLIT+TAIL_D+CL),
-    (cx-TAIL_TIP/2-CL,  -D_SPLIT+TAIL_D+CL),
-])
+# Two male tails on Part 2 (protrude upward into Part 1), spaced along x
+cx_a, cx_b = cx - TAIL_SPACING/2, cx + TAIL_SPACING/2
+tail   = (dovetail_poly(cx_a, -D_SPLIT, TAIL_BASE, TAIL_TIP, TAIL_D, direction='up')
+          .union(dovetail_poly(cx_b, -D_SPLIT, TAIL_BASE, TAIL_TIP, TAIL_D, direction='up')))
+socket = (dovetail_poly(cx_a, -D_SPLIT, TAIL_BASE, TAIL_TIP, TAIL_D, direction='up', cl=CL)
+          .union(dovetail_poly(cx_b, -D_SPLIT, TAIL_BASE, TAIL_TIP, TAIL_D, direction='up', cl=CL)))
 top_clip=box(-10,-D_SPLIT,COR_D+10,10)
 bot_clip=box(-10,-TEMPLATE_H-10,COR_D+10,-D_SPLIT)
 def clip(p,b): return p.intersection(b)
@@ -59,39 +47,32 @@ outer_bot = clip(outer_poly,bot_clip).union(tail)            # Part 2
 hole_top  = clip(hole_poly,top_clip)
 hole_bot  = clip(hole_poly,bot_clip)
 
-# ── Second split: Part 1 → 1A (left) + 1B (right curved corner) ──────────────
+# ── Second split: Part 1 → 1 (left) + 3 (right curved corner) ───────────────
 X_SPLIT = 180   # mm — both halves fit in 255×255
 
 # Find depth where xc(d) == X_SPLIT (below this depth, 1B has no material)
 d_xsplit = next(d for d in np.linspace(0, D_SPLIT, 5000) if xc(d) <= X_SPLIT)
 cy2 = -d_xsplit / 2   # centre of the x-split face in y
 
-# Part 1B male tail protrudes LEFT (-x) into Part 1A socket
-tail2 = Polygon([
-    (X_SPLIT,          cy2 - TAIL_BASE/2),
-    (X_SPLIT,          cy2 + TAIL_BASE/2),
-    (X_SPLIT - TAIL_D, cy2 + TAIL_TIP/2),
-    (X_SPLIT - TAIL_D, cy2 - TAIL_TIP/2),
-])
-socket2 = Polygon([
-    (X_SPLIT,                cy2 - TAIL_BASE/2 - CL),
-    (X_SPLIT,                cy2 + TAIL_BASE/2 + CL),
-    (X_SPLIT - TAIL_D - CL,  cy2 + TAIL_TIP/2 + CL),
-    (X_SPLIT - TAIL_D - CL,  cy2 - TAIL_TIP/2 - CL),
-])
+# Two tails on Part 3 protrude LEFT into Part 1, spaced along y
+cy2_a, cy2_b = cy2 - TAIL_SPACING/2, cy2 + TAIL_SPACING/2
+tail2   = (dovetail_poly(X_SPLIT, cy2_a, TAIL_BASE, TAIL_TIP, TAIL_D, direction='left')
+           .union(dovetail_poly(X_SPLIT, cy2_b, TAIL_BASE, TAIL_TIP, TAIL_D, direction='left')))
+socket2 = (dovetail_poly(X_SPLIT, cy2_a, TAIL_BASE, TAIL_TIP, TAIL_D, direction='left', cl=CL)
+           .union(dovetail_poly(X_SPLIT, cy2_b, TAIL_BASE, TAIL_TIP, TAIL_D, direction='left', cl=CL)))
 
 left_clip  = box(-10, -D_SPLIT, X_SPLIT,      10)
 right_clip = box(X_SPLIT, -D_SPLIT, COR_D+10, 10)
 
-outer_1a = clip(outer_top, left_clip).difference(socket2)   # Part 1A: socket
-outer_1b = clip(outer_top, right_clip).union(tail2)          # Part 1B: tail
-hole_1a  = clip(hole_top,  left_clip)
-hole_1b  = clip(hole_top,  right_clip)
+outer_1 = clip(outer_top, left_clip).difference(socket2)   # Part 1: socket
+outer_3 = clip(outer_top, right_clip).union(tail2)          # Part 3: tail
+hole_1  = clip(hole_top,  left_clip)
+hole_3  = clip(hole_top,  right_clip)
 
-# Diagonal support through Part 1A hole (bottom-left → top-right)
-_hb = hole_1a.bounds
+# Diagonal support through Part 1 hole (bottom-left → top-right)
+_hb = hole_1.bounds
 diag_strip = LineString([(_hb[0], _hb[3]), ((_hb[0]+_hb[2])/2, (_hb[1]+_hb[3])/2)]).buffer(BORDER/2, cap_style=2)
-hole_1a = hole_1a.difference(diag_strip)
+hole_1 = hole_1.difference(diag_strip)
 
 def make_mesh(outer_p, hole_p, extra_holes=None):
     extra_holes = extra_holes or []
@@ -108,11 +89,11 @@ def save_obj(verts, faces, path):
         for fc in faces: f.write(f'f {fc[0]+1} {fc[1]+1} {fc[2]+1}\n')
     print(f'Saved {len(faces)} tris → {path}')
 
-save_obj(*make_mesh(outer_1a, hole_1a), BASE+'_part1a.obj')
-save_obj(*make_mesh(outer_1b, hole_1b), BASE+'_part1b.obj')
+save_obj(*make_mesh(outer_1, hole_1), BASE+'_part1.obj')
+save_obj(*make_mesh(outer_3, hole_3), BASE+'_part3.obj')
 save_obj(*make_mesh(outer_bot, hole_bot), BASE+'_part2.obj')
-print(f'Dovetail params: neck {TAIL_BASE}mm → tip {TAIL_TIP:.1f}mm | depth {TAIL_D}mm | angle {ANGLE}°')
-print(f'Part 1A: left of x={X_SPLIT}mm | Part 1B: right curved corner (~{int(COR_D-X_SPLIT)}×{int(d_xsplit)}mm)')
+print(f'Dovetail params: neck {TAIL_BASE}mm → tip {TAIL_TIP:.1f}mm | depth {TAIL_D}mm')
+print(f'Part 1: left of x={X_SPLIT}mm | Part 3: right curved corner (~{int(COR_D-X_SPLIT)}×{int(d_xsplit)}mm)')
 print(f'Part 2:  depth {D_SPLIT}–{TEMPLATE_H}mm')
 
 # ── VALIDATION ────────────────────────────────────────────────────────────────
@@ -126,23 +107,23 @@ def chk(cond, msg):
 
 # 1. Bounding boxes ≤ 255×255
 BED = 255
-for poly, name in [(outer_1a,'Part 1A'),(outer_1b,'Part 1B'),(outer_bot,'Part 2 ')]:
+for poly, name in [(outer_1,'Part 1'),(outer_3,'Part 3'),(outer_bot,'Part 2 ')]:
     b = poly.bounds
     w, h = b[2]-b[0], b[3]-b[1]
     chk(w<=BED and h<=BED, f'{name}  bbox {w:.1f}×{h:.1f} mm  (bed {BED}×{BED})')
 
-# 2. Y-split joint: Part 2 tail fits inside Part 1A socket
+# 2. Y-split joint: Part 2 tail fits inside Part 1 socket
 tail_inflated = tail.buffer(0)            # exact tail
 chk(socket.buffer(0.05).contains(tail_inflated),
-    f'Y-joint  tail({TAIL_BASE}→{TAIL_TIP:.1f}mm) fits Part1A socket (CL={CL}mm)')
+    f'Y-joint  tail({TAIL_BASE}→{TAIL_TIP:.1f}mm) fits Part1 socket (CL={CL}mm)')
 
-# 3. X-split joint: Part 1B tail2 fits inside Part 1A socket2
+# 3. X-split joint: Part 3 tail2 fits inside Part 1 socket2
 chk(socket2.buffer(0.05).contains(tail2.buffer(0)),
-    f'X-joint  tail({TAIL_BASE}→{TAIL_TIP:.1f}mm) fits Part1A socket2 (CL={CL}mm)')
+    f'X-joint  tail({TAIL_BASE}→{TAIL_TIP:.1f}mm) fits Part1 socket2 (CL={CL}mm)')
 
 # 4. Assembly coverage vs original template
 original = clip(outer_poly, top_clip).union(clip(outer_poly, bot_clip))
-assembled = outer_1a.union(outer_1b).union(outer_bot)
+assembled = outer_1.union(outer_3).union(outer_bot)
 gap      = original.difference(assembled)
 excess   = assembled.difference(original)
 gap_pct  = gap.area / original.area * 100
